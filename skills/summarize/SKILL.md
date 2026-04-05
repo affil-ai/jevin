@@ -20,7 +20,7 @@ Cover the following:
 - Use clear, professional language suitable for Linear
 - Use markdown formatting for readability
 - **Collapsible sections**: Wrap "Changes Made" and "Files Modified" in `+++Section Name\n...\n+++`
-- **@mentions**: Use the Linear profile URL format from `<assignee>` context (e.g. `https://linear.app/<workspace>/profiles/<username>`)
+- **@mentions**: To mention the assignee, use a plain markdown link with their display name — e.g. `[Vivek](https://linear.app/workspace/profiles/vivek)`. Do NOT prefix with `@` — Linear renders the link itself as a mention. Get the name and URL from `<linear_display_name>` and `<linear_profile_url>` in the `<assignee>` context.
 
 ## Example
 
