@@ -36,7 +36,7 @@ You also need `AGENT_NAME` and `AGENT_DESCRIPTION` — these were collected in S
 
 Construct the manifest, substituting `<AGENT_NAME>`, `<AGENT_DESCRIPTION>`, and `<CYRUS_BASE_URL>` with actual values.
 
-**IMPORTANT: Use the manifest template EXACTLY as shown below.** The event subscription path MUST be `/slack-webhook` (not `/slack/events` or any other path). This matches the route registered by `SlackEventTransport` in the Cyrus codebase.
+**IMPORTANT: Use the manifest template EXACTLY as shown below.** The event subscription path MUST be `/slack-webhook` (not `/slack/events` or any other path). This matches the route registered by `SlackEventTransport` in the Cyrus codebase. The `files:read` bot scope is required so Slack screenshots and uploads can be downloaded into chat workspaces.
 
 ```json
 {
@@ -77,6 +77,7 @@ Construct the manifest, substituting `<AGENT_NAME>`, `<AGENT_DESCRIPTION>`, and 
             "bot": [
                 "groups:read",
                 "app_mentions:read",
+                "files:read",
                 "assistant:write",
                 "canvases:write",
                 "channels:history",

@@ -3290,15 +3290,11 @@ ${taskSection}`;
 		);
 
 		// Build allowed directories list - always include attachments directory
-		// Include repository paths from all repositories
-		const allRepoPaths = repositories.map((repo) => repo.repositoryPath);
-		const allowedDirectories: string[] = [
-			...new Set([
-				attachmentsDir,
-				...allRepoPaths,
-				...this.gitService.getGitMetadataDirectories(workspace.path),
-			]),
-		];
+		const allowedDirectories = this.buildIssueAllowedDirectories(
+			workspace.path,
+			attachmentsDir,
+			repositories,
+		);
 
 		this.logger.debug(
 			`Configured allowed directories for ${fullIssue.identifier}:`,
@@ -3319,6 +3315,26 @@ ${taskSection}`;
 			allowedTools,
 			disallowedTools,
 		};
+	}
+
+	private buildIssueAllowedDirectories(
+		workspacePath: string,
+		attachmentsDir: string,
+		repositories: RepositoryConfig[],
+	): string[] {
+		const allRepoPaths = repositories.map((repo) => repo.repositoryPath);
+		const slackHandoffDir = join(this.cyrusHome, "slack-handoffs");
+
+		// Linear issue sessions need access to the stable Slack handoff directory
+		// when a Slack triage thread spins up the background coding workflow.
+		return [
+			...new Set([
+				attachmentsDir,
+				slackHandoffDir,
+				...allRepoPaths,
+				...this.gitService.getGitMetadataDirectories(workspacePath),
+			]),
+		];
 	}
 
 	/**

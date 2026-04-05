@@ -86,6 +86,29 @@ export interface SlackChannel {
 }
 
 /**
+ * Minimal Slack file object fields used for local attachment ingestion.
+ *
+ * We intentionally keep this narrow so webhook and thread payloads can pass
+ * file metadata through without mirroring Slack's entire schema surface.
+ */
+export interface SlackFile {
+	/** File ID (e.g., "F12345678") */
+	id: string;
+	/** Original filename as shown in Slack */
+	name?: string;
+	/** Optional title set by Slack/uploader */
+	title?: string;
+	/** MIME type (e.g., "image/png") */
+	mimetype?: string;
+	/** Slack-specific filetype hint (e.g., "png", "pdf") */
+	filetype?: string;
+	/** Authenticated download URL */
+	url_private_download?: string;
+	/** Fallback authenticated file URL */
+	url_private?: string;
+}
+
+/**
  * Slack app_mention event payload
  * @see https://api.slack.com/events/app_mention
  */
@@ -104,6 +127,8 @@ export interface SlackAppMentionEvent {
 	thread_ts?: string;
 	/** Event timestamp */
 	event_ts: string;
+	/** Files attached to the message, when present */
+	files?: SlackFile[];
 }
 
 /**

@@ -37,6 +37,22 @@ export interface ChatPlatformAdapter<TEvent> {
 	/** Build a platform-specific system prompt */
 	buildSystemPrompt(event: TEvent): string;
 
+	/**
+	 * Prepare the initial prompt for a fresh chat session.
+	 *
+	 * Platforms can enrich the initial prompt with thread history or downloaded
+	 * attachments before the first runner turn starts.
+	 */
+	prepareInitialPrompt?(event: TEvent, workspacePath: string): Promise<string>;
+
+	/**
+	 * Prepare a follow-up prompt for an existing chat session.
+	 *
+	 * Platforms can enrich follow-ups with message-specific attachments before the
+	 * prompt is injected into a running session or used for a resume.
+	 */
+	prepareFollowUpPrompt?(event: TEvent, workspacePath: string): Promise<string>;
+
 	/** Fetch thread context as formatted string. Returns "" if not applicable */
 	fetchThreadContext(event: TEvent): Promise<string>;
 
@@ -120,7 +136,6 @@ export class ChatSessionHandler<TEvent> {
 				);
 			});
 
-			const taskInstructions = this.adapter.extractTaskInstructions(event);
 			const threadKey = this.adapter.getThreadKey(event);
 
 			// Check if there's already an active session for this thread
@@ -137,10 +152,14 @@ export class ChatSessionHandler<TEvent> {
 						existingRunner.addStreamMessage &&
 						existingRunner.isStreaming?.()
 					) {
+						const followUpPrompt = await this.prepareFollowUpPrompt(
+							event,
+							existingSession.workspace.path,
+						);
 						this.logger.info(
 							`Injecting follow-up prompt into running session ${existingSessionId} (thread ${threadKey})`,
 						);
-						existingRunner.addStreamMessage(taskInstructions);
+						existingRunner.addStreamMessage(followUpPrompt);
 					} else {
 						// Runner doesn't support streaming input or isn't in streaming mode — notify user
 						this.logger.info(
@@ -167,7 +186,10 @@ export class ChatSessionHandler<TEvent> {
 								existingSession,
 								existingSessionId,
 								resumeSessionId,
-								taskInstructions,
+								await this.prepareFollowUpPrompt(
+									event,
+									existingSession.workspace.path,
+								),
 							);
 						} catch (error) {
 							this.logger.error(
@@ -242,11 +264,10 @@ export class ChatSessionHandler<TEvent> {
 			// Save persisted state
 			await this.deps.onStateChange();
 
-			// Fetch thread context for threaded mentions
-			const threadContext = await this.adapter.fetchThreadContext(event);
-			const userPrompt = threadContext
-				? `${threadContext}\n\n${taskInstructions}`
-				: taskInstructions;
+			const userPrompt = await this.prepareInitialPrompt(
+				event,
+				session.workspace.path,
+			);
 
 			this.logger.info(
 				`Starting runner for ${this.adapter.platformName} event ${eventId}`,
@@ -283,6 +304,32 @@ export class ChatSessionHandler<TEvent> {
 		} finally {
 			this.deps.onWebhookEnd();
 		}
+	}
+
+	private async prepareInitialPrompt(
+		event: TEvent,
+		workspacePath: string,
+	): Promise<string> {
+		if (this.adapter.prepareInitialPrompt) {
+			return this.adapter.prepareInitialPrompt(event, workspacePath);
+		}
+
+		const taskInstructions = this.adapter.extractTaskInstructions(event);
+		const threadContext = await this.adapter.fetchThreadContext(event);
+		return threadContext
+			? `${threadContext}\n\n${taskInstructions}`
+			: taskInstructions;
+	}
+
+	private async prepareFollowUpPrompt(
+		event: TEvent,
+		workspacePath: string,
+	): Promise<string> {
+		if (this.adapter.prepareFollowUpPrompt) {
+			return this.adapter.prepareFollowUpPrompt(event, workspacePath);
+		}
+
+		return this.adapter.extractTaskInstructions(event);
 	}
 
 	/** Returns true if any runner managed by this handler is currently busy */

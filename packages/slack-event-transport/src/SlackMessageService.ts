@@ -1,3 +1,5 @@
+import type { SlackFile } from "./types.js";
+
 /**
  * Service for posting messages to Slack channels.
  *
@@ -19,6 +21,8 @@ export interface SlackThreadMessage {
 	bot_id?: string;
 	/** Message subtype (e.g., "bot_message") */
 	subtype?: string;
+	/** Files attached to the message, when present */
+	files?: SlackFile[];
 }
 
 /**

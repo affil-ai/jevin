@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type {
 	Attachment,
 	AttachmentConnection,
@@ -430,6 +431,24 @@ describe("EdgeWorker - Native Attachments", () => {
 			expect(manifest).toContain("image_1.png");
 			expect(manifest).toContain("### Other Attachments");
 			expect(manifest).toContain("attachment_1.pdf");
+		});
+	});
+
+	describe("buildIssueAllowedDirectories", () => {
+		it("includes the shared Slack handoff directory for background issue sessions", () => {
+			const allowedDirectories = (
+				edgeWorker as any
+			).buildIssueAllowedDirectories(
+				"/tmp/worktrees/PACK-123",
+				"/tmp/cyrus/PACK-123/attachments",
+				mockConfig.repositories,
+			);
+
+			expect(allowedDirectories).toContain(
+				join(TEST_CYRUS_HOME, "slack-handoffs"),
+			);
+			expect(allowedDirectories).toContain("/tmp/cyrus/PACK-123/attachments");
+			expect(allowedDirectories).toContain("/test/repo");
 		});
 	});
 });

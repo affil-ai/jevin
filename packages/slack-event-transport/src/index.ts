@@ -18,6 +18,7 @@ export type {
 	SlackEventTransportConfig,
 	SlackEventTransportEvents,
 	SlackEventType,
+	SlackFile,
 	SlackUser,
 	SlackVerificationMode,
 	SlackWebhookEvent,

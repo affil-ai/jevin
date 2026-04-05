@@ -176,6 +176,8 @@ describe("SlackChatAdapter system prompt", () => {
 		expect(systemPrompt).toContain(repositoryRoutingContext);
 		expect(systemPrompt).toContain("mcp__linear__get_user");
 		expect(systemPrompt).toContain('query: "me"');
+		expect(systemPrompt).toContain("Downloaded Slack Attachments");
+		expect(systemPrompt).toContain("Linear handoff paths");
 		expect(systemPrompt).toContain("linear_get_agent_sessions");
 	});
 });

@@ -8,6 +8,7 @@ import {
 	stripMention as stripSlackMention,
 } from "cyrus-slack-event-transport";
 import type { ChatPlatformAdapter } from "./ChatSessionHandler.js";
+import { SlackAttachmentService } from "./SlackAttachmentService.js";
 
 /**
  * Slack implementation of ChatPlatformAdapter.
@@ -24,12 +25,16 @@ export class SlackChatAdapter
 	private repositoryRoutingContext: string;
 	private logger: ILogger;
 	private selfBotId: string | undefined;
+	private slackMessageService: SlackMessageService;
+	private slackAttachmentService: SlackAttachmentService;
 
 	constructor(
 		repositoryPaths: string[] = [],
 		logger?: ILogger,
 		options?: {
 			repositoryRoutingContext?: string;
+			slackMessageService?: SlackMessageService;
+			slackAttachmentService?: SlackAttachmentService;
 		},
 	) {
 		this.repositoryPaths = Array.from(
@@ -38,6 +43,11 @@ export class SlackChatAdapter
 		this.repositoryRoutingContext =
 			options?.repositoryRoutingContext?.trim() || "";
 		this.logger = logger ?? createLogger({ component: "SlackChatAdapter" });
+		this.slackMessageService =
+			options?.slackMessageService ?? new SlackMessageService();
+		this.slackAttachmentService =
+			options?.slackAttachmentService ??
+			new SlackAttachmentService(this.logger);
 	}
 
 	/**
@@ -58,7 +68,7 @@ export class SlackChatAdapter
 			return this.selfBotId;
 		}
 		try {
-			const identity = await new SlackMessageService().getIdentity(token);
+			const identity = await this.slackMessageService.getIdentity(token);
 			this.selfBotId = identity.bot_id;
 			return this.selfBotId;
 		} catch (error) {
@@ -82,6 +92,56 @@ export class SlackChatAdapter
 
 	getEventId(event: SlackWebhookEvent): string {
 		return event.eventId;
+	}
+
+	async prepareInitialPrompt(
+		event: SlackWebhookEvent,
+		workspacePath: string,
+	): Promise<string> {
+		const taskInstructions = this.extractTaskInstructions(event);
+		const token = this.getSlackBotToken(event);
+		if (!token) {
+			const threadContext = await this.fetchThreadContext(event);
+			return threadContext
+				? `${threadContext}\n\n${taskInstructions}`
+				: taskInstructions;
+		}
+
+		const threadData = await this.fetchThreadData(event, token);
+		const threadContext = threadData
+			? this.formatThreadContext(threadData.messages, threadData.selfBotId)
+			: "";
+		const attachmentManifest = await this.downloadSlackAttachments(
+			event,
+			workspacePath,
+			token,
+			threadData?.messages ?? [],
+		);
+
+		return [threadContext, taskInstructions, attachmentManifest]
+			.filter(Boolean)
+			.join("\n\n");
+	}
+
+	async prepareFollowUpPrompt(
+		event: SlackWebhookEvent,
+		workspacePath: string,
+	): Promise<string> {
+		const taskInstructions = this.extractTaskInstructions(event);
+		const token = this.getSlackBotToken(event);
+		if (!token) {
+			return taskInstructions;
+		}
+
+		const threadData = await this.fetchThreadData(event, token);
+		const attachmentManifest = await this.downloadSlackAttachments(
+			event,
+			workspacePath,
+			token,
+			threadData?.messages ?? [],
+		);
+
+		return [taskInstructions, attachmentManifest].filter(Boolean).join("\n\n");
 	}
 
 	buildSystemPrompt(event: SlackWebhookEvent): string {
@@ -125,6 +185,7 @@ ${this.repositoryRoutingContext ? `\n\n${this.repositoryRoutingContext}` : ""}
 - If the user asks you to make repo code changes immediately, use these steps:
   - First run \`mcp__linear__get_user\` with \`query: "me"\` to get your Linear identity.
   - Create an Issue in the user's tracker for the requested work (for example using \`mcp__linear__save_issue\`), including enough context and acceptance criteria to execute it. Default the issue status/state to "Backlog". **IMPORTANT: Never set the status to "Triage".**
+  - If the prompt includes a "Downloaded Slack Attachments" section, copy the listed Linear handoff paths into the created issue description so the future background coding session can inspect the same files.
   - To route the issue to a specific repository, add \`[repo=repo-name]\` to the issue description. To target a specific branch, use \`[repo=repo-name#branch-name]\`. For multiple repos: \`repos=repo1,repo2\`.
   - Assign that Issue to that same user (your own Linear user).
   - That assignment is what immediately kicks off work in your own agent session.
@@ -166,24 +227,17 @@ Supported mrkdwn syntax:
 		}
 
 		try {
-			const slackService = new SlackMessageService();
-			const [messages, selfBotId] = await Promise.all([
-				slackService.fetchThreadMessages({
-					token,
-					channel: event.payload.channel,
-					thread_ts: event.payload.thread_ts,
-					limit: 50,
-				}),
-				this.getSelfBotId(token),
-			]);
-
-			if (messages.length === 0) {
+			const threadData = await this.fetchThreadData(event, token);
+			if (!threadData || threadData.messages.length === 0) {
 				return "";
 			}
 
 			// Include all messages (user and bot) so follow-up sessions retain
 			// full conversation history, especially when the runner type changes.
-			return this.formatThreadContext(messages, selfBotId);
+			return this.formatThreadContext(
+				threadData.messages,
+				threadData.selfBotId,
+			);
 		} catch (error) {
 			this.logger.warn(
 				`Failed to fetch Slack thread context: ${error instanceof Error ? error.message : String(error)}`,
@@ -231,7 +285,7 @@ Supported mrkdwn syntax:
 			// Thread the reply under the original message
 			const threadTs = event.payload.thread_ts || event.payload.ts;
 
-			await new SlackMessageService().postMessage({
+			await this.slackMessageService.postMessage({
 				token,
 				channel: event.payload.channel,
 				text: summary,
@@ -274,12 +328,63 @@ Supported mrkdwn syntax:
 
 		const threadTs = event.payload.thread_ts || event.payload.ts;
 
-		await new SlackMessageService().postMessage({
+		await this.slackMessageService.postMessage({
 			token,
 			channel: event.payload.channel,
 			text: "I'm still working on the previous request in this thread. I'll pick up your new message once I'm done.",
 			thread_ts: threadTs,
 		});
+	}
+
+	private async fetchThreadData(
+		event: SlackWebhookEvent,
+		token: string,
+	): Promise<{ messages: SlackThreadMessage[]; selfBotId?: string } | null> {
+		if (!event.payload.thread_ts) {
+			return null;
+		}
+
+		const [messages, selfBotId] = await Promise.all([
+			this.slackMessageService.fetchThreadMessages({
+				token,
+				channel: event.payload.channel,
+				thread_ts: event.payload.thread_ts,
+				limit: 50,
+			}),
+			this.getSelfBotId(token),
+		]);
+
+		return { messages, selfBotId };
+	}
+
+	private async downloadSlackAttachments(
+		event: SlackWebhookEvent,
+		workspacePath: string,
+		token: string,
+		threadMessages: SlackThreadMessage[],
+	): Promise<string> {
+		const files = [
+			...threadMessages.flatMap((message) => message.files ?? []),
+			...(event.payload.files ?? []),
+		];
+		if (files.length === 0) {
+			return "";
+		}
+
+		try {
+			// Download into the chat workspace so the next runner turn can inspect
+			// screenshots even when the source message came from Slack, not Linear.
+			return await this.slackAttachmentService.downloadFiles(
+				files,
+				workspacePath,
+				token,
+			);
+		} catch (error) {
+			this.logger.warn(
+				`Failed to download Slack attachments: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return "";
+		}
 	}
 
 	private formatThreadContext(
