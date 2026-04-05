@@ -251,29 +251,15 @@ Supported mrkdwn syntax:
 		runner: IAgentRunner,
 	): Promise<void> {
 		try {
-			// Get the last assistant message from the runner as the summary
 			const messages = runner.getMessages();
-			const lastAssistantMessage = [...messages]
-				.reverse()
-				.find((m) => m.type === "assistant");
+			let summary =
+				this.extractLastAssistantText(messages) ?? "Task completed.";
+			const createdIssue = this.findCreatedLinearIssue(messages);
 
-			let summary = "Task completed.";
-			if (
-				lastAssistantMessage &&
-				lastAssistantMessage.type === "assistant" &&
-				"message" in lastAssistantMessage
-			) {
-				const msg = lastAssistantMessage as {
-					message: {
-						content: Array<{ type: string; text?: string }>;
-					};
-				};
-				const textBlock = msg.message.content?.find(
-					(block) => block.type === "text" && block.text,
-				);
-				if (textBlock?.text) {
-					summary = textBlock.text;
-				}
+			// Post the raw Linear URL so Slack can generate the native unfurl card
+			// shown in the thread, instead of just rendering a plain mrkdwn link.
+			if (createdIssue && !summary.includes(createdIssue.url)) {
+				summary = `${summary}\n\nLinear issue: ${createdIssue.identifier}\n${createdIssue.url}`;
 			}
 
 			const token = this.getSlackBotToken(event);
@@ -406,5 +392,186 @@ ${msg.text}
 			.join("\n");
 
 		return `<slack_thread_context>\n${formattedMessages}\n</slack_thread_context>`;
+	}
+
+	private extractLastAssistantText(
+		messages: ReturnType<IAgentRunner["getMessages"]>,
+	): string | undefined {
+		const lastAssistantMessage = [...messages]
+			.reverse()
+			.find((message) => message.type === "assistant");
+
+		const content = (lastAssistantMessage as any)?.message?.content;
+		if (!Array.isArray(content)) {
+			return undefined;
+		}
+
+		const textBlock = content.find(
+			(block: any) => block?.type === "text" && typeof block.text === "string",
+		);
+		return textBlock?.text;
+	}
+
+	private findCreatedLinearIssue(
+		messages: ReturnType<IAgentRunner["getMessages"]>,
+	): { url: string; identifier: string } | null {
+		const toolNamesById = new Map<string, string>();
+
+		// First map tool-use IDs so we can recognize the matching tool_result.
+		for (const message of messages) {
+			const content = (message as any)?.message?.content;
+			if (!Array.isArray(content)) {
+				continue;
+			}
+
+			for (const block of content) {
+				if (block?.type !== "tool_use" || typeof block.id !== "string") {
+					continue;
+				}
+				if (typeof block.name === "string") {
+					toolNamesById.set(block.id, block.name);
+				}
+			}
+		}
+
+		// Walk backwards so we pick the most recent created issue in the session.
+		for (const message of [...messages].reverse()) {
+			const content = (message as any)?.message?.content;
+			if (!Array.isArray(content)) {
+				continue;
+			}
+
+			for (const block of content) {
+				if (
+					block?.type !== "tool_result" ||
+					typeof block.tool_use_id !== "string" ||
+					block.is_error
+				) {
+					continue;
+				}
+
+				const toolName = toolNamesById.get(block.tool_use_id);
+				if (!toolName?.includes("save_issue")) {
+					continue;
+				}
+
+				const issue = this.extractLinearIssueFromToolResult(block.content);
+				if (issue) {
+					return issue;
+				}
+			}
+		}
+
+		return null;
+	}
+
+	private extractLinearIssueFromToolResult(
+		content: unknown,
+	): { url: string; identifier: string } | null {
+		const flattenedContent = this.flattenToolResultContent(content);
+		if (flattenedContent.length === 0) {
+			return null;
+		}
+
+		for (const entry of flattenedContent) {
+			const issue = this.findLinearIssueInValue(entry);
+			if (issue) {
+				return issue;
+			}
+		}
+
+		return null;
+	}
+
+	private flattenToolResultContent(content: unknown): unknown[] {
+		if (Array.isArray(content)) {
+			return content.flatMap((entry) => this.flattenToolResultContent(entry));
+		}
+
+		if (typeof content === "string") {
+			const trimmed = content.trim();
+			if (trimmed.length === 0) {
+				return [];
+			}
+
+			try {
+				return [JSON.parse(trimmed)];
+			} catch {
+				return [trimmed];
+			}
+		}
+
+		if (
+			content &&
+			typeof content === "object" &&
+			"text" in content &&
+			typeof (content as { text?: unknown }).text === "string"
+		) {
+			return this.flattenToolResultContent((content as { text: string }).text);
+		}
+
+		if (content == null) {
+			return [];
+		}
+
+		return [content];
+	}
+
+	private findLinearIssueInValue(
+		value: unknown,
+	): { url: string; identifier: string } | null {
+		if (typeof value === "string") {
+			const urlMatch = value.match(/https:\/\/linear\.app\/\S+/);
+			if (!urlMatch) {
+				return null;
+			}
+
+			const identifierMatch = value.match(/\b[A-Z][A-Z0-9]+-\d+\b/);
+			return {
+				url: urlMatch[0],
+				identifier: identifierMatch?.[0] ?? "Linear issue",
+			};
+		}
+
+		if (Array.isArray(value)) {
+			for (const entry of value) {
+				const nestedIssue = this.findLinearIssueInValue(entry);
+				if (nestedIssue) {
+					return nestedIssue;
+				}
+			}
+			return null;
+		}
+
+		if (!value || typeof value !== "object") {
+			return null;
+		}
+
+		const candidate = value as {
+			url?: unknown;
+			identifier?: unknown;
+			issue?: unknown;
+		};
+		if (
+			typeof candidate.url === "string" &&
+			candidate.url.includes("linear.app")
+		) {
+			return {
+				url: candidate.url,
+				identifier:
+					typeof candidate.identifier === "string"
+						? candidate.identifier
+						: "Linear issue",
+			};
+		}
+
+		for (const nestedValue of Object.values(candidate)) {
+			const nestedIssue = this.findLinearIssueInValue(nestedValue);
+			if (nestedIssue) {
+				return nestedIssue;
+			}
+		}
+
+		return null;
 	}
 }

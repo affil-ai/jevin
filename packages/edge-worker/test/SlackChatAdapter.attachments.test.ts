@@ -126,4 +126,85 @@ describe("SlackChatAdapter attachment prompts", () => {
 		expect(prompt).toContain("## Downloaded Slack Attachments");
 		expect(slackMessageService.fetchThreadMessages).not.toHaveBeenCalled();
 	});
+
+	it("appends the raw Linear issue URL so Slack can unfurl it", async () => {
+		const slackMessageService = {
+			postMessage: vi.fn(),
+		} as unknown as SlackMessageService;
+
+		const adapter = new SlackChatAdapter([], undefined, {
+			slackMessageService,
+		});
+
+		await adapter.postReply(
+			{
+				eventId: "Ev3",
+				teamId: "T1",
+				slackBotToken: "xoxb-test",
+				payload: {
+					type: "app_mention",
+					user: "U123",
+					channel: "C1",
+					text: "<@U0BOT1234> please file this",
+					ts: "1700000000.000400",
+					thread_ts: "1700000000.000300",
+					event_ts: "1700000000.000400",
+				},
+			},
+			{
+				getMessages: () => [
+					{
+						type: "assistant",
+						message: {
+							content: [
+								{
+									type: "tool_use",
+									id: "tool-linear-save",
+									name: "mcp__linear__save_issue",
+									input: { title: "Fix links page" },
+								},
+							],
+						},
+					},
+					{
+						type: "user",
+						message: {
+							content: [
+								{
+									type: "tool_result",
+									tool_use_id: "tool-linear-save",
+									is_error: false,
+									content: JSON.stringify({
+										identifier: "AFF-1587",
+										url: "https://linear.app/affil/issue/AFF-1587/fix-links-page",
+									}),
+								},
+							],
+						},
+					},
+					{
+						type: "assistant",
+						message: {
+							content: [
+								{
+									type: "text",
+									text: "Created AFF-1587 and assigned it to myself.",
+								},
+							],
+						},
+					},
+				],
+			} as any,
+		);
+
+		expect(slackMessageService.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				channel: "C1",
+				thread_ts: "1700000000.000300",
+				text: expect.stringContaining(
+					"Linear issue: AFF-1587\nhttps://linear.app/affil/issue/AFF-1587/fix-links-page",
+				),
+			}),
+		);
+	});
 });
