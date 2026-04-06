@@ -1,0 +1,2 @@
+This is a parity probe file for AFF-1608.
+Purpose: Verify repo selection, final response, and PR creation.
